@@ -1,6 +1,8 @@
 package vn.tridev.keyenceflutter.keyence_flutter
 
 import android.content.Context
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import com.keyence.autoid.sdk.SdkStatus
 import com.keyence.autoid.sdk.scan.DecodeResult
@@ -9,35 +11,80 @@ import com.keyence.autoid.sdk.scan.scanparams.CodeType
 import com.keyence.autoid.sdk.scan.scanparams.ScanParams
 import com.keyence.autoid.sdk.scan.scanparams.scanParams.Trigger
 
-class ScanBarcode(context: Context, private val api: KeyenceScannerFlutterApi) : ScanManager.DataListener {
+class ScanBarcode(private val context: Context, private val api: KeyenceScannerFlutterApi) : ScanManager.DataListener {
 
     private var tagName: String = ScanBarcode::class.java.simpleName
     private var mScanManager: ScanManager? = null
+    private val mainHandler = Handler(Looper.getMainLooper())
 
     init {
         //init & create scanner
         mScanManager = ScanManager.createScanManager(context)
-        if (mScanManager!!.isEnabled) {
-            mScanManager!!.addDataListener(this)
-            initScanner()
-            setScanParams()
+        mScanManager?.let { manager ->
+            if (manager.isEnabled) {
+                manager.addDataListener(this)
+                initScanner(manager)
+                setScanParams()
+            }
         }
     }
 
     fun triggerAction() {
-        Log.v(tagName, "triggerAction()")
+        Log.v(tagName, "triggerAction() called")
 
         try {
-            if (mScanManager != null) {
-                if (mScanManager!!.isEnabled) {
-                    // Start reading.
-                    mScanManager!!.startRead()
+            val manager = checkAndGetManager()
+            if (manager != null) {
+                if (manager.isEnabled) {
+                    Log.v(tagName, "Executing startRead()")
+                    manager.startRead()
                 } else {
-                    api.onHandleScanFailure("ScanManager is not available.") {}
+                    sendFailure("Scanner disabled")
+                }
+            } else {
+                sendFailure("ScanManager not available")
+            }
+        } catch (t: Throwable) {
+            Log.e(tagName, "triggerAction error", t)
+            sendFailure("Hardware Error: ${t.message}")
+        }
+    }
+
+    private fun checkAndGetManager(): ScanManager? {
+        if (mScanManager == null) {
+            Log.v(tagName, "ScanManager is null, attempting to initialize...")
+            initScanManager()
+        }
+        return mScanManager
+    }
+
+    private fun initScanManager() {
+        try {
+            mScanManager = ScanManager.createScanManager(context)
+            mScanManager?.let { manager ->
+                if (manager.isEnabled) {
+                    manager.addDataListener(this)
+                    initScanner(manager)
+                    Log.v(tagName, "ScanManager re-initialized successfully")
                 }
             }
-        } catch (ex: Exception) {
-            Log.v(tagName, "Exception: " + ex.localizedMessage)
+        } catch (t: Throwable) {
+            Log.e(tagName, "Failed to init ScanManager", t)
+        }
+    }
+
+    private fun initScanner(manager: ScanManager) {
+        try {
+            val codeType = CodeType()
+            if (manager.getConfig(codeType) == SdkStatus.SUCCESS) {
+                codeType.upcEanJan = true
+                codeType.code39 = true
+                codeType.code128 = true
+                codeType.qrCode = true
+                manager.setConfig(codeType)
+            }
+        } catch (t: Throwable) {
+            Log.w(tagName, "initScanner failed: ${t.message}")
         }
     }
 
@@ -45,33 +92,35 @@ class ScanBarcode(context: Context, private val api: KeyenceScannerFlutterApi) :
         //to set scan trigger
         val scanParams = ScanParams()
         scanParams.trigger.triggerMode = Trigger.TriggerMode.NORMAL
-        scanParams.trigger.continuousMode.redundancyTimeout = 5000 //milliseconds
-        scanParams.trigger.continuousMode.successCodesCounter.enable = false //to use continuous count
-        scanParams.trigger.scannerTimeout = 5 //seconds
-        if (mScanManager != null) {
+        scanParams.trigger.scannerTimeout = 10 // Increased to 10 seconds
+        mScanManager?.let { manager ->
             Log.v(tagName, "setConfig")
-            mScanManager!!.setConfig(scanParams)
+            manager.setConfig(scanParams)
         }
     }
 
     private fun cancelTriggerEvent() {
         Log.v(tagName, "cancelTriggerEvent()")
         // Acquire the reading status.
-        if (mScanManager != null && mScanManager!!.isReading) {
-            // Stop reading.
-            mScanManager!!.stopRead()
+        mScanManager?.let { manager ->
+            if (manager.isReading) {
+                // Stop reading.
+                manager.stopRead()
+            }
         }
     }
 
     fun onPause() {
         Log.v(tagName, "onPause() - lockScanner()")
-        lookScanner()
+        lockScanner()
     }
 
-    private fun lookScanner() {
-        if (mScanManager != null && mScanManager!!.isEnabled) {
-            //lock scanner
-            mScanManager?.lockScanner()
+    private fun lockScanner() {
+        mScanManager?.let { manager ->
+            if (manager.isEnabled) {
+                //lock scanner
+                manager.lockScanner()
+            }
         }
     }
 
@@ -81,77 +130,64 @@ class ScanBarcode(context: Context, private val api: KeyenceScannerFlutterApi) :
     }
 
     private fun unlockScanner() {
-        if (mScanManager != null && mScanManager!!.isEnabled) {
-            //claim barcode reader
-            mScanManager?.unlockScanner()
+        mScanManager?.let { manager ->
+            if (manager.isEnabled) {
+                //claim barcode reader
+                manager.unlockScanner()
+            }
         }
     }
 
     fun onDestroy() {
         Log.v(tagName, "onDestroy()")
-        if (mScanManager != null) {
-            mScanManager!!.removeDataListener(this)
-            mScanManager!!.releaseScanManager()
+        mScanManager?.let { manager ->
+            manager.removeDataListener(this)
+            manager.releaseScanManager()
         }
-    }
-
-    private fun initScanner() {
-        Log.v(tagName, "initScanner()")
-        if (mScanManager != null) {
-            // Define a variable to store the code type.
-            val codeType = CodeType()
-            // Acquire the current setting values.
-            var status = mScanManager!!.getConfig(codeType)
-            if (status == SdkStatus.SUCCESS) {
-                Log.v(tagName, "getConfig status: $status")
-            }
-            // Change the setting values.
-            // Disable JAN code reading and enable QR code reading
-            codeType.upcEanJan = false
-            codeType.qrCode = true
-            // Apply the setting values.
-            status = mScanManager!!.setConfig(codeType)
-            if (status == SdkStatus.SUCCESS) {
-                Log.v(tagName, "setConfig status: $status")
-            }
-        }
+        mScanManager = null
     }
 
     // Create a read event.
     override fun onDataReceived(decodeResult: DecodeResult?) {
         Log.v(tagName, "onDataReceived()")
+        
+        if (decodeResult == null) return
+
         // Acquire the reading result.
-        val result: DecodeResult.Result = decodeResult!!.result
+        val result: DecodeResult.Result = decodeResult.result
         Log.v(tagName, "result: $result")
 
         when (result) {
             DecodeResult.Result.SUCCESS -> {
                 // Acquire the read code type.
-                val data: String = decodeResult!!.data
-
+                val data: String = decodeResult.data
                 Log.v(tagName, "readData: $data")
-                api.onHandleScanSuccess(data) {}
-
-            }
-            DecodeResult.Result.WARNING -> {
-                api.onHandleScanFailure("WARNING") {}
-
+                sendSuccess(data)
             }
             DecodeResult.Result.TIMEOUT -> {
-                api.onHandleScanFailure("TIMEOUT") {}
-
+                sendFailure("TIMEOUT")
             }
             DecodeResult.Result.CANCELED -> {
-                api.onHandleScanFailure("CANCELED") {}
-
+                sendFailure("CANCELED")
             }
             DecodeResult.Result.FAILED -> {
-                api.onHandleScanFailure("FAILED") {}
-
+                sendFailure("FAILED")
+            }
+            else -> {
+                sendFailure(result.name)
             }
         }
-        //finally cancel the trigger event
-        cancelTriggerEvent()
-        onDestroy()
+    }
+
+    private fun sendSuccess(data: String) {
+        mainHandler.post {
+            api.onHandleScanSuccess(data) {}
+        }
+    }
+
+    private fun sendFailure(error: String) {
+        mainHandler.post {
+            api.onHandleScanFailure(error) {}
+        }
     }
 }

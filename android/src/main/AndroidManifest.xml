@@ -1,3 +1,4 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android"
   package="vn.tridev.keyenceflutter.keyence_flutter">
+    <uses-permission android:name="com.keyence.autoid.PERMISSION_SCAN" />
 </manifest>
